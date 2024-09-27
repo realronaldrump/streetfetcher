@@ -7,6 +7,7 @@ from shapely.validation import make_valid
 import folium
 from streamlit_folium import folium_static
 import geopandas as gpd
+import osmnx as ox
 
 # Set page config
 st.set_page_config(page_title="Davis's Fun Map Generator!", page_icon="🌍", layout="wide")
@@ -179,20 +180,34 @@ def validate_geojson(geojson_data):
         return False
 
 def generate_geojson(location, query_builder, streets_only=False):
-    query = query_builder(location)
-    data = make_request("http://overpass-api.de/api/interpreter", data=query, method='POST')
-
-    if not data or not data.get('elements'):
-        st.error(f"No geometry found for {location['display_name']}.")
-        return None
-
-    geojson_data = osm_to_geojson(data, streets_only=streets_only)
-    
-    if validate_geojson(geojson_data):
-        return geojson_data
+    if streets_only:
+        # Use osmnx for faster street network retrieval
+        try:
+            if location['osm_type'] == 'relation':
+                gdf = ox.graph_from_place(location['display_name'], network_type='drive')
+            else:
+                gdf = ox.graph_from_place(location['display_name'], network_type='drive', which_result=1)
+            geojson_data = json.loads(gdf.to_json())
+            return geojson_data
+        except Exception as e:
+            st.error(f"Error retrieving street data using osmnx: {str(e)}")
+            return None
     else:
-        st.error('Generated GeoJSON is not valid.')
-        return None
+        # Use Overpass API for boundary data
+        query = query_builder(location)
+        data = make_request("http://overpass-api.de/api/interpreter", data=query, method='POST')
+
+        if not data or not data.get('elements'):
+            st.error(f"No geometry found for {location['display_name']}.")
+            return None
+
+        geojson_data = osm_to_geojson(data, streets_only=streets_only)
+
+        if validate_geojson(geojson_data):
+            return geojson_data
+        else:
+            st.error('Generated GeoJSON is not valid.')
+            return None
 
 def display_map(geojson_data):
     # Create a GeoDataFrame from the GeoJSON features
