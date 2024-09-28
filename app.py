@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import requests
-from shapely.geometry import shape, MultiPolygon, Polygon
+from shapely.geometry import shape, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 import folium
@@ -10,6 +10,7 @@ import geopandas as gpd
 import osmnx as ox
 import asyncio
 import aiohttp
+import pandas as pd  # Import pandas for GeoDataFrame concatenation
 
 # Set page config
 st.set_page_config(page_title="Davis's Fun Map Generator!", page_icon="🌍", layout="wide")
@@ -185,15 +186,52 @@ async def fetch_osm_data(session, url, data):
     async with session.post(url, data=data) as response:
         return await response.json()
 
+async def fetch_osm_data_osmnx(session, polygon):
+    # Fetch street data for a given polygon using osmnx and aiohttp
+    try:
+        gdf = ox.features_from_polygon(polygon, tags={'highway': True})
+        return gdf
+    except Exception as e:
+        st.error(f"Error retrieving street data using osmnx: {str(e)}")
+        return None
+
 async def generate_geojson_concurrent(location, query_builder, streets_only=False):
     if streets_only:
-        # Use osmnx for faster street network retrieval (no concurrency needed here)
+        # Use osmnx with concurrency for faster street network retrieval
         try:
             if location['osm_type'] == 'relation':
-                gdf = ox.geometries_from_place(location['display_name'], tags={'highway': True})
+                # Get the bounding box of the area
+                bbox = ox.geocode_to_gdf(location['display_name']).total_bounds
+
+                # Divide the bounding box into smaller boxes (adjust num_rows/num_cols as needed)
+                num_rows = 50  
+                num_cols = 50 
+                width = (bbox[2] - bbox[0]) / num_cols
+                height = (bbox[3] - bbox[1]) / num_rows
+
+                # Create a list of polygons representing the smaller boxes
+                polygons = []
+                for i in range(num_rows):
+                    for j in range(num_cols):
+                        minx = bbox[0] + j * width
+                        miny = bbox[1] + i * height
+                        maxx = minx + width
+                        maxy = miny + height
+                        polygons.append(box(minx, miny, maxx, maxy))
+
+                async with aiohttp.ClientSession() as session:
+                    tasks = []
+                    for polygon in polygons:
+                        tasks.append(fetch_osm_data_osmnx(session, polygon))
+                    gdfs = await asyncio.gather(*tasks)
+
+                # Combine the GeoDataFrames from all boxes
+                gdf = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True))
             else:
+                # Use ox.graph_from_place for smaller areas (cities, towns, etc.)
                 gdf = ox.graph_from_place(location['display_name'], network_type='drive', which_result=1)
                 gdf = ox.graph_to_gdfs(gdf, nodes=False, edges=True)
+
             geojson_data = json.loads(gdf.to_json())
             return geojson_data
         except Exception as e:
@@ -204,7 +242,7 @@ async def generate_geojson_concurrent(location, query_builder, streets_only=Fals
         query = query_builder(location)
 
         # Split the query into smaller chunks (you might need to adjust the chunk size)
-        chunk_size = 1000
+        chunk_size = 200
         queries = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
 
         async with aiohttp.ClientSession() as session:
