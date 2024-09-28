@@ -5,7 +5,7 @@ from shapely.geometry import shape, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 import folium
-from streamlit_folium import st_folium  # Updated import
+from streamlit_folium import folium_static
 import geopandas as gpd
 import osmnx as ox
 import asyncio
@@ -311,8 +311,8 @@ def display_map(geojson_data):
     # Add layer control
     folium.LayerControl().add_to(m)
 
-    # Display the map using st_folium
-    st_folium(m, width=700, height=500)
+    # Display the map
+    folium_static(m)
 
 
 def display_data_preview(geojson_data):
