@@ -299,7 +299,7 @@ def display_map(geojson_data):
             'fillOpacity': 0.7,
         }
 
-    st_folium(m, geojson_data, style_function=style_function, name="geojson")
+    st_folium(m, geojson_data, style=style_function, name="geojson")
 
     # Fit the map to the bounds of the GeoJSON
     m.fit_bounds([(bounds[1], bounds[0]), (bounds[3], bounds[2])])
