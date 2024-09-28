@@ -5,12 +5,13 @@ from shapely.geometry import shape, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 import folium
-from streamlit_folium import folium_static
+from streamlit_folium import st_folium
 import geopandas as gpd
 import osmnx as ox
 import asyncio
 import aiohttp
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 
 # Set page config
 st.set_page_config(page_title="Davis's Fun Map Generator!", page_icon="🌍", layout="wide")
@@ -186,8 +187,7 @@ async def fetch_osm_data(session, url, data):
     async with session.post(url, data=data) as response:
         return await response.json()
 
-async def fetch_osm_data_osmnx(session, polygon):
-    # Fetch street data for a given polygon using osmnx and aiohttp
+def fetch_osm_data_osmnx(polygon):
     try:
         gdf = ox.features_from_polygon(polygon, tags={'highway': True})
         return gdf
@@ -199,38 +199,28 @@ async def generate_geojson_concurrent(location, query_builder, streets_only=Fals
     if streets_only:
         # Use osmnx with concurrency for faster street network retrieval
         try:
-            if location['osm_type'] == 'relation':
-                # Get the bounding box of the area
-                bbox = ox.geocode_to_gdf(location['display_name']).total_bounds
+            bbox = ox.geocode_to_gdf(location['display_name']).total_bounds
 
-                # Divide the bounding box into smaller boxes (adjust num_rows/num_cols as needed)
-                num_rows = 2  
-                num_cols = 2 
-                width = (bbox[2] - bbox[0]) / num_cols
-                height = (bbox[3] - bbox[1]) / num_rows
+            # Divide the bounding box into smaller boxes
+            num_rows = 4
+            num_cols = 4
+            width = (bbox[2] - bbox[0]) / num_cols
+            height = (bbox[3] - bbox[1]) / num_rows
 
-                # Create a list of polygons representing the smaller boxes
-                polygons = []
-                for i in range(num_rows):
-                    for j in range(num_cols):
-                        minx = bbox[0] + j * width
-                        miny = bbox[1] + i * height
-                        maxx = minx + width
-                        maxy = miny + height
-                        polygons.append(box(minx, miny, maxx, maxy))
+            polygons = []
+            for i in range(num_rows):
+                for j in range(num_cols):
+                    minx = bbox[0] + j * width
+                    miny = bbox[1] + i * height
+                    maxx = minx + width
+                    maxy = miny + height
+                    polygons.append(box(minx, miny, maxx, maxy))
 
-                async with aiohttp.ClientSession() as session:
-                    tasks = []
-                    for polygon in polygons:
-                        tasks.append(fetch_osm_data_osmnx(session, polygon))
-                    gdfs = await asyncio.gather(*tasks)
+            with ThreadPoolExecutor(max_workers=16) as executor:
+                gdfs = list(executor.map(fetch_osm_data_osmnx, polygons))
 
-                # Combine the GeoDataFrames from all boxes
-                gdf = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True))
-            else:
-                # Use ox.graph_from_place for smaller areas (cities, towns, etc.)
-                gdf = ox.graph_from_place(location['display_name'], network_type='drive', which_result=1)
-                gdf = ox.graph_to_gdfs(gdf, nodes=False, edges=True)
+            # Combine the GeoDataFrames from all boxes
+            gdf = gpd.GeoDataFrame(pd.concat([df for df in gdfs if df is not None], ignore_index=True))
 
             geojson_data = json.loads(gdf.to_json())
             return geojson_data
@@ -241,7 +231,7 @@ async def generate_geojson_concurrent(location, query_builder, streets_only=Fals
         # Use asyncio and aiohttp for concurrent Overpass API requests
         query = query_builder(location)
 
-        # Split the query into smaller chunks (you might need to adjust the chunk size)
+        # Split the query into smaller chunks
         chunk_size = 500
         queries = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
 
@@ -320,8 +310,8 @@ def display_map(geojson_data):
     # Add layer control
     folium.LayerControl().add_to(m)
 
-    # Display the map
-    folium_static(m)
+    # Display the map using st_folium
+    st_folium(m, width=700, height=500)
 
 def display_data_preview(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
@@ -397,7 +387,7 @@ def display_statistics(geojson_data):
 
 def main():
     st.title("🌍 Davis's Fun Map Generator!")
-    st.markdown("Generate and play with a fun map just like Davis would!  It works for any location worldwide!!")
+    st.markdown("Generate and play with a fun map just like Davis would! It works for any location worldwide!!")
 
     # Sidebar for location input and validation
     with st.sidebar:
