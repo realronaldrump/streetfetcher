@@ -1,17 +1,10 @@
 import streamlit as st
 import json
 import requests
-from shapely.geometry import shape, MultiPolygon, Polygon, box
-from shapely.ops import unary_union
-from shapely.validation import make_valid
+from shapely.geometry import shape, Polygon, LineString, MultiPolygon
 import folium
 from streamlit_folium import st_folium
 import geopandas as gpd
-import osmnx as ox
-import asyncio
-import aiohttp
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 
 # Set page config
 st.set_page_config(page_title="Davis's Fun Map Generator!", page_icon="🌍", layout="wide")
@@ -22,38 +15,20 @@ SECONDARY_COLOR = "#03DAC6"
 BACKGROUND_COLOR = "#121212"
 TEXT_COLOR = "#E0E0E0"
 
-# Custom CSS for dark mode, Roboto font, and flat design
+# Custom CSS for dark mode and styling
 st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
-    
     body {{
         color: {TEXT_COLOR};
         background-color: {BACKGROUND_COLOR};
         font-family: 'Roboto', sans-serif;
     }}
-    
     .stButton > button {{
-        width: 100%;
         background-color: {PRIMARY_COLOR};
-        color: {BACKGROUND_COLOR};
-        padding: 10px;
-        font-size: 16px;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-    }}
-    .stButton > button:hover {{
-        background-color: {SECONDARY_COLOR};
         color: {BACKGROUND_COLOR};
     }}
     .stDownloadButton > button {{
         background-color: {SECONDARY_COLOR};
-        color: {BACKGROUND_COLOR};
-    }}
-    .stDownloadButton > button:hover {{
-        background-color: {PRIMARY_COLOR};
         color: {BACKGROUND_COLOR};
     }}
     .stTextInput > div > div > input {{
@@ -66,36 +41,12 @@ st.markdown(f"""
         color: {TEXT_COLOR};
         border: 1px solid {PRIMARY_COLOR};
     }}
-    .stAlert {{
-        background-color: {BACKGROUND_COLOR};
-        color: {TEXT_COLOR};
-        border: 1px solid {PRIMARY_COLOR};
-        padding: 10px;
-        border-radius: 4px;
-        animation: fadeIn 0.5s;
-    }}
-    @keyframes fadeIn {{
-        0% {{ opacity: 0; }}
-        100% {{ opacity: 1; }}
-    }}
-    .stTab {{
-        background-color: {BACKGROUND_COLOR};
-        color: {TEXT_COLOR};
-    }}
-    .stTab > div {{
-        background-color: {BACKGROUND_COLOR};
-        color: {TEXT_COLOR};
-    }}
-    .stDataFrame {{
-        background-color: {BACKGROUND_COLOR};
-        color: {TEXT_COLOR};
-    }}
     </style>
     """, unsafe_allow_html=True)
 
-def make_request(url, params=None, headers=None, method='GET', data=None):
+def make_request(url, params=None, headers=None):
     try:
-        response = requests.request(method, url, params=params, headers=headers, data=data)
+        response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
@@ -106,290 +57,122 @@ def validate_location(location, location_type):
     params = {'q': location, 'format': 'json', 'limit': 1, 'featuretype': location_type}
     headers = {'User-Agent': 'GeojsonGenerator/1.0'}
     response = make_request("https://nominatim.openstreetmap.org/search", params, headers)
-    
-    if response:
-        return response[0]
-    return None
+    return response[0] if response else None
 
-def build_overpass_query(location):
-    return f"[out:json];{location['osm_type']}({location['osm_id']});(._;>;);out geom;"
-
-def build_streets_overpass_query(location):
+def generate_geojson(location, streets_only=False):
     area_id = int(location['osm_id']) + 3600000000 if location['osm_type'] == 'relation' else int(location['osm_id'])
-    return f"[out:json];area({area_id})->.searchArea;(way['highway'~'^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street|track|road)$'](area.searchArea););out geom;"
-
-def create_geometry(element, ways, streets_only):
-    if element['type'] == 'way':
-        coords = [[node['lon'], node['lat']] for node in element['geometry']]
-        if len(coords) < 2:
-            return None  # Not enough coordinates to form a valid geometry
-        if len(coords) >= 4 and coords[0] == coords[-1]:
-            return {"type": "Polygon", "coordinates": [coords]}
-        else:
-            return {"type": "LineString", "coordinates": coords}
-    elif not streets_only and element['type'] == 'relation':
-        outer_ways = []
-        for m in element.get('members', []):
-            if m['type'] == 'way' and m['role'] == 'outer':
-                way_coords = [[node['lon'], node['lat']] for node in ways.get(m['ref'], {}).get('geometry', [])]
-                if len(way_coords) >= 4:
-                    try:
-                        outer_ways.append(Polygon(way_coords))
-                    except ValueError:
-                        # Skip invalid polygons
-                        pass
-        if outer_ways:
-            try:
-                multi_poly = unary_union(outer_ways)
-                # Attempt to make the geometry valid
-                multi_poly = make_valid(multi_poly)
-                if isinstance(multi_poly, Polygon):
-                    return {"type": "Polygon", "coordinates": [list(multi_poly.exterior.coords)]}
-                elif isinstance(multi_poly, MultiPolygon):
-                    return {"type": "MultiPolygon", "coordinates": [[list(poly.exterior.coords)] for poly in multi_poly.geoms]}
-            except Exception as e:
-                st.warning(f"Error creating geometry for relation {element['id']}: {str(e)}")
-    return None
-
-def osm_to_geojson(osm_data, streets_only=False):
-    features = []
-    ways = {e['id']: e for e in osm_data['elements'] if e['type'] == 'way'}
-
-    for element in osm_data['elements']:
-        if streets_only and element['type'] != 'way':
-            continue
-
-        geometry = create_geometry(element, ways, streets_only)
-        if geometry:
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "name": element.get('tags', {}).get('name', 'Unknown'),
-                    "osm_id": element['id'],
-                    "osm_type": element['type'],
-                    "geometry": geometry  # Include geometry in properties for filtering
-                },
-                "geometry": geometry
-            })
-
-    return {"type": "FeatureCollection", "features": features}
-
-def validate_geojson(geojson_data):
-    try:
-        for feature in geojson_data['features']:
-            shape(feature['geometry'])
-        return True
-    except Exception as e:
-        st.error(f"Validation error: {str(e)}")
-        return False
-
-async def fetch_osm_data(session, url, data):
-    async with session.post(url, data=data) as response:
-        return await response.json()
-
-def fetch_osm_data_osmnx(polygon):
-    try:
-        gdf = ox.features_from_polygon(polygon, tags={'highway': True})
-        return gdf
-    except Exception as e:
-        st.error(f"Error retrieving street data using osmnx: {str(e)}")
-        return None
-
-async def generate_geojson_concurrent(location, query_builder, streets_only=False):
+    
     if streets_only:
-        # Use osmnx with concurrency for faster street network retrieval
-        try:
-            bbox = ox.geocode_to_gdf(location['display_name']).total_bounds
-
-            # Divide the bounding box into smaller boxes
-            num_rows = 4
-            num_cols = 4
-            width = (bbox[2] - bbox[0]) / num_cols
-            height = (bbox[3] - bbox[1]) / num_rows
-
-            polygons = []
-            for i in range(num_rows):
-                for j in range(num_cols):
-                    minx = bbox[0] + j * width
-                    miny = bbox[1] + i * height
-                    maxx = minx + width
-                    maxy = miny + height
-                    polygons.append(box(minx, miny, maxx, maxy))
-
-            with ThreadPoolExecutor(max_workers=16) as executor:
-                gdfs = list(executor.map(fetch_osm_data_osmnx, polygons))
-
-            # Combine the GeoDataFrames from all boxes
-            gdf = gpd.GeoDataFrame(pd.concat([df for df in gdfs if df is not None], ignore_index=True))
-
-            geojson_data = json.loads(gdf.to_json())
-            return geojson_data
-        except Exception as e:
-            st.error(f"Error retrieving street data using osmnx: {str(e)}")
-            return None
+        # Keep the streets query exactly as it was
+        query = f"""
+        [out:json];
+        area({area_id})->.searchArea;
+        (
+          way["highway"](area.searchArea);
+        );
+        (._;>;);
+        out geom;
+        """
     else:
-        # Use asyncio and aiohttp for concurrent Overpass API requests
-        query = query_builder(location)
+        # Updated query for boundary
+        query = f"""
+        [out:json];
+        ({location['osm_type']}({location['osm_id']});
+        >;
+        );
+        out geom;
+        """
+    
+    response = make_request("http://overpass-api.de/api/interpreter", params={'data': query})
+    if not response:
+        return None, "Failed to get response from Overpass API"
+    
+    features = process_elements(response['elements'], streets_only)
+    
+    if features:
+        gdf = gpd.GeoDataFrame.from_features(features)
+        gdf = gdf.set_geometry('geometry')
+        return json.loads(gdf.to_json()), None
+    else:
+        return None, f"No features found. Raw response: {json.dumps(response)}"
 
-        # Split the query into smaller chunks
-        chunk_size = 500
-        queries = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
+def process_elements(elements, streets_only):
+    features = []
+    ways = {e['id']: e for e in elements if e['type'] == 'way'}
+    
+    for element in elements:
+        if element['type'] == 'way':
+            coords = [(node['lon'], node['lat']) for node in element.get('geometry', [])]
+            if len(coords) >= 2:
+                geom = LineString(coords) if streets_only else (Polygon(coords) if coords[0] == coords[-1] else LineString(coords))
+                features.append({
+                    'type': 'Feature',
+                    'geometry': geom.__geo_interface__,
+                    'properties': element.get('tags', {})
+                })
+        elif element['type'] == 'relation' and not streets_only:
+            outer_rings = []
+            for member in element.get('members', []):
+                if member['type'] == 'way' and member['role'] == 'outer':
+                    way = ways.get(member['ref'])
+                    if way:
+                        coords = [(node['lon'], node['lat']) for node in way.get('geometry', [])]
+                        if len(coords) >= 3 and coords[0] == coords[-1]:
+                            outer_rings.append(Polygon(coords))
+            if outer_rings:
+                geom = outer_rings[0] if len(outer_rings) == 1 else MultiPolygon(outer_rings)
+                features.append({
+                    'type': 'Feature',
+                    'geometry': geom.__geo_interface__,
+                    'properties': element.get('tags', {})
+                })
+    return features
 
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for q in queries:
-                tasks.append(fetch_osm_data(session, "http://overpass-api.de/api/interpreter", data=q))
-            responses = await asyncio.gather(*tasks)
-
-        # Combine the results from all chunks
-        combined_data = {'elements': []}
-        for r in responses:
-            combined_data['elements'].extend(r.get('elements', []))
-
-        geojson_data = osm_to_geojson(combined_data, streets_only=streets_only)
-
-        if validate_geojson(geojson_data):
-            return geojson_data
-        else:
-            st.error('Generated GeoJSON is not valid.')
-            return None
-
-def generate_geojson_wrapper(location, query_builder, streets_only=False):
-    # Wrapper function to run the async function in a synchronous context
-    return asyncio.run(generate_geojson_concurrent(location, query_builder, streets_only))
 
 def display_map(geojson_data):
-    # Create a GeoDataFrame from the GeoJSON features
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
-
-    # Ensure the geometry column is set
-    if 'geometry' not in gdf.columns:
-        st.error("No geometry column found in the GeoDataFrame.")
-        return
-
-    # Convert the geometry column to Shapely geometry objects
-    gdf['geometry'] = gdf['geometry'].apply(shape)
-
-    gdf = gdf.set_geometry('geometry')
-
-    # Calculate bounds and center
     bounds = gdf.total_bounds
     center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
 
-    # Create a folium map centered on the calculated center
     m = folium.Map(location=center, zoom_start=10, tiles="cartodbdark_matter")
-
-    # Filter out only Point features from the GeoJSON data
-    filtered_geojson = {
-        "type": "FeatureCollection",
-        "features": [
-            feature for feature in geojson_data['features']
-            if feature['geometry']['type'] != 'Point'  # Only exclude Point features
-        ]
-    }
-
-    # Add the filtered GeoJSON to the map with style function
-    def style_function(_):
-        return {
-            'fillColor': PRIMARY_COLOR,
-            'color': SECONDARY_COLOR,
-            'weight': 2,
-            'fillOpacity': 0.7,
-        }
-
     folium.GeoJson(
-        filtered_geojson,  # Use the filtered data
-        style_function=style_function,
-        name="geojson",
-        marker=None
+        geojson_data,
+        style_function=lambda _: {'fillColor': PRIMARY_COLOR, 'color': SECONDARY_COLOR, 'weight': 2, 'fillOpacity': 0.7},
     ).add_to(m)
 
-    # Fit the map to the bounds of the GeoJSON
     m.fit_bounds([(bounds[1], bounds[0]), (bounds[3], bounds[2])])
-
-    # Add layer control
-    folium.LayerControl().add_to(m)
-
-    # Display the map using st_folium
     st_folium(m, width=700, height=500)
 
 def display_data_preview(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
     st.dataframe(gdf.drop(columns=['geometry']).head())
 
-def calculate_area(gdf):
-    if gdf.crs is None:
-        # If CRS is not set, assume WGS84 (EPSG:4326)
-        gdf = gdf.set_crs(epsg=4326, inplace=False)
-
-    # Use an equal-area projection for accurate area calculation
-    gdf_area = gdf.to_crs('+proj=cea')
-    return gdf_area.area.sum() / 1e6  # Convert to square kilometers
-
-def calculate_total_street_length(gdf):
-    if gdf.crs is None:
-        # If CRS is not set, assume WGS84 (EPSG:4326)
-        gdf = gdf.set_crs(epsg=4326, inplace=False)
-
-    # Use an equal-area projection for accurate length calculation
-    gdf_length = gdf.to_crs('+proj=cea')
-    return gdf_length.length.sum() / 1000  # Convert to kilometers
-
 def display_statistics(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
-
-    # Ensure the geometry column is set
-    if 'geometry' not in gdf.columns:
-        st.error("No geometry column found in the GeoDataFrame.")
-        return
-
-    # Convert the geometry column to Shapely geometry objects
     gdf['geometry'] = gdf['geometry'].apply(shape)
-
     gdf = gdf.set_geometry('geometry')
 
     st.write("📊 General Statistics:")
     st.write(f"Total features: {len(gdf)}")
-
-    geometry_types = gdf.geometry.type.value_counts().to_dict()
     st.write("Geometry types:")
-    for geo_type, count in geometry_types.items():
+    for geo_type, count in gdf.geometry.type.value_counts().items():
         st.write(f"- {geo_type}: {count}")
-
-    try:
-        area = calculate_area(gdf)
-        st.write(f"📐 Total area: {area:.2f} km²")
-    except Exception as e:
-        st.warning(f"Couldn't calculate area: {str(e)}")
 
     if 'highway' in gdf.columns:
         st.write("\n🛣️ Street Statistics:")
-        street_types = gdf['highway'].value_counts()
-        st.write("Street types:")
-        for street_type, count in street_types.items():
+        for street_type, count in gdf['highway'].value_counts().items():
             st.write(f"- {street_type}: {count}")
 
-        try:
-            total_street_length = calculate_total_street_length(gdf)
-            st.write(f"Total street length: {total_street_length:.2f} km")
-
-            if area > 0:
-                street_density = total_street_length / area
-                st.write(f"Street density: {street_density:.2f} km/km²")
-        except Exception as e:
-            st.warning(f"Couldn't calculate street length: {str(e)}")
-
-    # Calculate and display top 5 most common names
-    top_names = gdf['name'].value_counts().head()
-    st.write("\n📊 Top 5 most common names:")
-    for name, count in top_names.items():
-        st.write(f"- {name}: {count}")
+    if 'name' in gdf.columns:
+        top_names = gdf['name'].value_counts().head()
+        st.write("\n📊 Top 5 most common names:")
+        for name, count in top_names.items():
+            st.write(f"- {name}: {count}")
 
 def main():
     st.title("🌍 Davis's Fun Map Generator!")
     st.markdown("Generate and play with a fun map just like Davis would! It works for any location worldwide!!")
 
-    # Sidebar for location input and validation
     with st.sidebar:
         st.header("Location Input")
         location = st.text_input('Enter Location:', placeholder="e.g., New York City, Paris, Tokyo")
@@ -405,7 +188,6 @@ def main():
             else:
                 st.error('❌ Location not found. Please check your input.')
 
-    # Main content area
     if 'validated_location' in st.session_state:
         st.header(f"Generate GeoJSON for {st.session_state.validated_location['display_name']}")
 
@@ -414,26 +196,27 @@ def main():
         with col1:
             if st.button('🗺️ Generate Boundary GeoJSON', key='boundary'):
                 with st.spinner('Generating boundary GeoJSON...'):
-                    geojson_data = generate_geojson_wrapper(st.session_state.validated_location, build_overpass_query)
+                    geojson_data, error_message = generate_geojson(st.session_state.validated_location)
                 if geojson_data:
                     st.session_state.current_geojson = geojson_data
                     st.session_state.map_type = 'boundary'
                     st.success('✅ Boundary GeoJSON generated successfully!')
+                else:
+                    st.error(f'❌ Failed to generate Boundary GeoJSON. {error_message}')
 
         with col2:
             if st.button('🛣️ Generate Streets GeoJSON', key='streets'):
-                with st.spinner('Generating streets GeoJSON...'):
-                    geojson_data = generate_geojson_wrapper(st.session_state.validated_location,
-                                                           build_streets_overpass_query, streets_only=True)
+                with st.spinner('Generating streets GeoJSON (this may take a while for large areas)...'):
+                    geojson_data, error_message = generate_geojson(st.session_state.validated_location, streets_only=True)
                 if geojson_data:
                     st.session_state.current_geojson = geojson_data
                     st.session_state.map_type = 'streets'
                     st.success('✅ Streets GeoJSON generated successfully!')
+                else:
+                    st.error(f'❌ Failed to generate Streets GeoJSON. {error_message}')
 
-    # Display results if GeoJSON data is available
     if 'current_geojson' in st.session_state:
-        st.header(
-            f"📊 Analysis for {st.session_state.validated_location['display_name']} ({st.session_state.map_type.capitalize()})")
+        st.header(f"📊 Analysis for {st.session_state.validated_location['display_name']} ({st.session_state.map_type.capitalize()})")
 
         tab1, tab2, tab3 = st.tabs(["🗺️ Map", "📋 Data Preview", "📈 Statistics"])
 
