@@ -268,7 +268,6 @@ def generate_geojson_wrapper(location, query_builder, streets_only=False):
     # Wrapper function to run the async function in a synchronous context
     return asyncio.run(generate_geojson_concurrent(location, query_builder, streets_only))
 
-
 def display_map(geojson_data):
     # Create a GeoDataFrame from the GeoJSON features
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
@@ -328,7 +327,6 @@ def display_data_preview(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
     st.dataframe(gdf.drop(columns=['geometry']).head())
 
-
 def calculate_area(gdf):
     if gdf.crs is None:
         # If CRS is not set, assume WGS84 (EPSG:4326)
@@ -338,7 +336,6 @@ def calculate_area(gdf):
     gdf_area = gdf.to_crs('+proj=cea')
     return gdf_area.area.sum() / 1e6  # Convert to square kilometers
 
-
 def calculate_total_street_length(gdf):
     if gdf.crs is None:
         # If CRS is not set, assume WGS84 (EPSG:4326)
@@ -347,7 +344,6 @@ def calculate_total_street_length(gdf):
     # Use an equal-area projection for accurate length calculation
     gdf_length = gdf.to_crs('+proj=cea')
     return gdf_length.length.sum() / 1000  # Convert to kilometers
-
 
 def display_statistics(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
@@ -398,7 +394,6 @@ def display_statistics(geojson_data):
     st.write("\n📊 Top 5 most common names:")
     for name, count in top_names.items():
         st.write(f"- {name}: {count}")
-
 
 def main():
     st.title("🌍 Davis's Fun Map Generator!")
@@ -468,7 +463,6 @@ def main():
             mime="application/json",
             key='download_geojson'
         )
-
 
 if __name__ == '__main__':
     main()
