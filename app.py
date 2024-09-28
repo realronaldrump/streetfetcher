@@ -10,7 +10,7 @@ import geopandas as gpd
 import osmnx as ox
 import asyncio
 import aiohttp
-import pandas as pd  # Import pandas for GeoDataFrame concatenation
+import pandas as pd
 
 # Set page config
 st.set_page_config(page_title="Davis's Fun Map Generator!", page_icon="🌍", layout="wide")
@@ -242,7 +242,7 @@ async def generate_geojson_concurrent(location, query_builder, streets_only=Fals
         query = query_builder(location)
 
         # Split the query into smaller chunks (you might need to adjust the chunk size)
-        chunk_size = 200
+        chunk_size = 500
         queries = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
 
         async with aiohttp.ClientSession() as session:
