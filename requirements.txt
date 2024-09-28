@@ -5,3 +5,5 @@ folium
 streamlit-folium
 geopandas
 osmnx
+aiohttp
+asyncio
