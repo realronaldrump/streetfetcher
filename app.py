@@ -115,7 +115,7 @@ def build_overpass_query(location):
 
 def build_streets_overpass_query(location):
     area_id = int(location['osm_id']) + 3600000000 if location['osm_type'] == 'relation' else int(location['osm_id'])
-    return f"[out:json];area({area_id})->.searchArea;(way['highway']['highway'!~'path|footway|cycleway|bridleway|steps|platform|construction']['area'!~'yes'](area.searchArea););out geom;"
+    return f"[out:json];area({area_id})->.searchArea;(way['highway'~'^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street|track|road)$'](area.searchArea););out geom;"
 
 def create_geometry(element, ways, streets_only):
     if element['type'] == 'way':
@@ -166,7 +166,7 @@ def osm_to_geojson(osm_data, streets_only=False):
                     "name": element.get('tags', {}).get('name', 'Unknown'),
                     "osm_id": element['id'],
                     "osm_type": element['type'],
-                    "geometry": geometry
+                    "geometry": geometry  # Include geometry in properties for filtering
                 },
                 "geometry": geometry
             })
@@ -204,8 +204,8 @@ async def generate_geojson_concurrent(location, query_builder, streets_only=Fals
                 bbox = ox.geocode_to_gdf(location['display_name']).total_bounds
 
                 # Divide the bounding box into smaller boxes (adjust num_rows/num_cols as needed)
-                num_rows = 50  
-                num_cols = 50 
+                num_rows = 2  
+                num_cols = 2 
                 width = (bbox[2] - bbox[0]) / num_cols
                 height = (bbox[3] - bbox[1]) / num_rows
 
@@ -290,7 +290,16 @@ def display_map(geojson_data):
     # Create a folium map centered on the calculated center
     m = folium.Map(location=center, zoom_start=10, tiles="cartodbdark_matter")
 
-    # Add GeoJSON to the map with style function
+    # Filter out only Point features from the GeoJSON data
+    filtered_geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            feature for feature in geojson_data['features']
+            if feature['geometry']['type'] != 'Point'  # Only exclude Point features
+        ]
+    }
+
+    # Add the filtered GeoJSON to the map with style function
     def style_function(_):
         return {
             'fillColor': PRIMARY_COLOR,
@@ -300,9 +309,10 @@ def display_map(geojson_data):
         }
 
     folium.GeoJson(
-        geojson_data,
+        filtered_geojson,  # Use the filtered data
         style_function=style_function,
-        name="geojson"
+        name="geojson",
+        marker=None
     ).add_to(m)
 
     # Fit the map to the bounds of the GeoJSON
@@ -313,7 +323,6 @@ def display_map(geojson_data):
 
     # Display the map
     folium_static(m)
-
 
 def display_data_preview(geojson_data):
     gdf = gpd.GeoDataFrame.from_features(geojson_data['features'])
