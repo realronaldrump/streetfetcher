@@ -5,7 +5,7 @@ from shapely.geometry import shape, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 import folium
-from streamlit_folium import folium_static
+from streamlit_folium import st_folium
 import geopandas as gpd
 import osmnx as ox
 import asyncio
@@ -299,11 +299,7 @@ def display_map(geojson_data):
             'fillOpacity': 0.7,
         }
 
-    folium.GeoJson(
-        geojson_data,
-        style_function=style_function,
-        name="geojson"
-    ).add_to(m)
+    st_folium(m, geojson_data, style_function=style_function, name="geojson")
 
     # Fit the map to the bounds of the GeoJSON
     m.fit_bounds([(bounds[1], bounds[0]), (bounds[3], bounds[2])])
@@ -312,7 +308,7 @@ def display_map(geojson_data):
     folium.LayerControl().add_to(m)
 
     # Display the map
-    folium_static(m)
+    st_folium(m)
 
 
 def display_data_preview(geojson_data):
